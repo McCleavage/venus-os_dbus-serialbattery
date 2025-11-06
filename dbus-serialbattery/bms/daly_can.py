@@ -61,6 +61,7 @@ class Daly_Can(Battery):
     COMMAND_CELL_BALANCE = "COMMAND_CELL_BALANCE"
     COMMAND_ALARM = "COMMAND_ALARM"
     COMMAND_SETTINGS = "COMMAND_SETTINGS"
+    COMMAND_QUERY_FRAME = "COMMAND_QUERY_FRAME"
 
     RESPONSE_BASE = "RESPONSE_BASE"
     RESPONSE_SOC = "RESPONSE_SOC"
@@ -73,6 +74,7 @@ class Daly_Can(Battery):
     RESPONSE_CELL_BALANCE = "RESPONSE_CELL_BALANCE"
     RESPONSE_ALARM = "RESPONSE_ALARM"
     RESPONSE_SETTINGS = "RESPONSE_SETTINGS"
+    RESPONSE_SOH = "RESPONSE_SOH"
 
     # command bytes [Priority=18][Command=94][BMS ID=01][Uplink ID=40]
     CAN_FRAMES = {
@@ -87,6 +89,11 @@ class Daly_Can(Battery):
         COMMAND_CELL_BALANCE: [0x18970140],
         COMMAND_ALARM: [0x18980140],
         COMMAND_SETTINGS: [0x18500140],
+        # Queries all data according to the KVMS CAN spec (used for SOH currently):
+        # Does spam the bus a bit with all the response messages
+        # https://www.scribd.com/document/909996302/KVMS-Intranet-Communication-CAN-Protocol-Customer-Version
+        COMMAND_QUERY_FRAME: [0x0400FF80],
+
         RESPONSE_BASE: [0x18944001],
         RESPONSE_SOC: [0x18904001],
         RESPONSE_MINMAX_CELL_VOLTS: [0x18914001],
@@ -98,6 +105,7 @@ class Daly_Can(Battery):
         RESPONSE_CELL_BALANCE: [0x18974001],
         RESPONSE_ALARM: [0x18984001],
         RESPONSE_SETTINGS: [0x18504001],
+        RESPONSE_SOH: [0x040D8001],
     }
 
     BATTERYTYPE = "Daly CAN"
@@ -155,7 +163,7 @@ class Daly_Can(Battery):
             message = Message(arbitration_id=(self.CAN_FRAMES[self.COMMAND_SETTINGS][0] & 0xFFFF00FF) | (self.device_address << 8), data=data)
             self.can_transport_interface.can_bus.send(message, timeout=0.2)
         except CanOperationError:
-            logger.error("CAN Bus Error while sending data. Check cabeling")
+            logger.error("CAN Bus Error while sending data. Check cabling")
 
         self.capacity = BATTERY_CAPACITY
         sleep(0.1)
@@ -205,6 +213,9 @@ class Daly_Can(Battery):
             message = Message(arbitration_id=(self.CAN_FRAMES[self.COMMAND_CELL_BALANCE][0] & 0xFFFF00FF) | (self.device_address << 8), data=data)
             self.can_transport_interface.can_bus.send(message, timeout=0.2)
             message = Message(arbitration_id=(self.CAN_FRAMES[self.COMMAND_ALARM][0] & 0xFFFF00FF) | (self.device_address << 8), data=data)
+            self.can_transport_interface.can_bus.send(message, timeout=0.2)
+            # KVMS query frame (used for SOH)
+            message = Message(arbitration_id=(self.CAN_FRAMES[self.COMMAND_QUERY_FRAME][0] & 0xFFFFFFFF) | (self.device_address << 8), data=data)
             self.can_transport_interface.can_bus.send(message, timeout=0.2)
         except CanOperationError:
             logger.error("CAN Bus Error while sending data. Check cabeling")
@@ -435,6 +446,16 @@ class Daly_Can(Battery):
                         self.protection.low_soc = 1
                     else:
                         self.protection.low_soc = 0
+
+                # SOH / current limit / PWM data
+                elif normalized_arbitration_id in self.CAN_FRAMES[self.RESPONSE_SOH]:
+                    # All data:
+                    # (limit_cur_state, raw_limit_cur, raw_soh, raw_pwm_duty) = unpack_from(">BHHH", data)
+                    # Only SOH:
+                    (_, _, raw_soh, _) = unpack_from(">BHHH", data)
+
+                    # SOH 0.1%/bit
+                    self.soh = raw_soh / 10  # e.g. 953 -> 95.3%
 
             self.hardware_version = "Daly CAN " + str(self.cell_count) + "S"
 
