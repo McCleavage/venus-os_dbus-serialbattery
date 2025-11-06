@@ -119,7 +119,10 @@ MbPage {
 
         MbItemValue {
             description: qsTr("State of health")
-            item.bind: service.path("/Soh")
+            item {
+                bind: service.path("/Soh")
+                unit: "%"
+            }
             show: item.valid
         }
 
